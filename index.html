@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Surfside Timer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f5f5f7;
+      color: #1d1d1f;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .app {
+      max-width: 720px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ===== Top bar ===== */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px;
+      background: #fff;
+      border: 1px solid #e3e3e6;
+      border-radius: 12px;
+    }
+
+    .duration {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      color: #555;
+    }
+    .duration label { margin-right: 4px; }
+    .duration input[type="number"] {
+      width: 56px;
+      padding: 6px 8px;
+      font-size: 16px;
+      font-variant-numeric: tabular-nums;
+      border: 1px solid #d0d0d4;
+      border-radius: 6px;
+      background: #fff;
+      text-align: center;
+    }
+    .duration .colon { font-weight: 600; opacity: 0.6; }
+
+    .globals { display: flex; gap: 8px; }
+
+    button {
+      font: inherit;
+      cursor: pointer;
+      padding: 8px 14px;
+      border: 1px solid #d0d0d4;
+      border-radius: 8px;
+      background: #fff;
+      color: inherit;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    button:hover { background: #f0f0f3; }
+    button:active { background: #e6e6ea; }
+
+    /* ===== Track list ===== */
+    .tracks {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .track {
+      --color: #888;
+      background: #fff;
+      border: 2px solid #e3e3e6;
+      border-radius: 12px;
+      padding: 14px 16px;
+      display: grid;
+      grid-template-columns: auto 1fr auto auto;
+      grid-template-rows: auto auto;
+      grid-template-areas:
+        "play label countdown menu"
+        "bar  bar   bar       bar";
+      gap: 10px 12px;
+      align-items: center;
+    }
+
+    .track .play       { grid-area: play; }
+    .track .label      { grid-area: label; }
+    .track .countdown  { grid-area: countdown; }
+    .track .menu-btn   { grid-area: menu; }
+    .track .bar        { grid-area: bar; }
+
+    .track .play {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-color: var(--color);
+      color: var(--color);
+      font-size: 14px;
+    }
+
+    .track .label {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--color);
+    }
+
+    .track .countdown {
+      font-size: 28px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.5px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+    .track .countdown:hover {
+      background: #f0f0f3;
+    }
+    .track input.countdown {
+      cursor: text;
+      background: #fff;
+      border: 1px solid var(--color);
+      outline: none;
+      text-align: right;
+      width: 5em;
+      padding: 1px 6px;
+    }
+    .track input.countdown:focus {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--color) 35%, transparent);
+    }
+
+    .track .menu-btn {
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border-radius: 50%;
+      border-color: transparent;
+      font-size: 18px;
+      line-height: 1;
+      color: #666;
+    }
+    .track .menu-btn:hover { background: #f0f0f3; }
+
+    /* Drain bar — grey background, color fill */
+    .track .bar {
+      height: 40px;
+      background: #e0e0e4;
+      border-radius: 999px;
+      overflow: hidden;
+      /* Transparent 2px border so the layout doesn't shift when a track
+         becomes active (the border just changes color). */
+      border: 2px solid transparent;
+    }
+    .track.active .bar {
+      /* Slightly darker shade of the track color, per spec. */
+      border-color: color-mix(in srgb, var(--color) 70%, black);
+    }
+    .track.active.overtime .bar {
+      /* Match OVERTIME_RED in the JS pulse ramp. */
+      border-color: rgb(127, 29, 29);
+    }
+    .track .bar-fill {
+      height: 100%;
+      width: var(--bar-pct, 100%);
+      background: var(--color);
+      border-radius: inherit;
+    }
+
+    /* ===== Overtime visuals =====
+       Driven by per-track custom properties set in JS:
+         --overtime-color : pink → dark-red, depth-based
+         --overtime-scale : 1 → 1.5 over the first 30s of overtime
+         --flash-opacity  : sine modulation while running, 1 otherwise */
+    .track.overtime .bar-fill {
+      background: var(--overtime-color, var(--color));
+      opacity: var(--flash-opacity, 1);
+    }
+    .track.overtime .countdown:not(input) {
+      color: var(--overtime-color, inherit);
+      font-size: calc(28px * var(--overtime-scale, 1));
+      opacity: var(--flash-opacity, 1);
+    }
+
+    /* ===== Per-track menu (popover) ===== */
+    .track { position: relative; }
+    .track-menu {
+      position: absolute;
+      top: 50px;
+      right: 14px;
+      z-index: 10;
+      background: #fff;
+      border: 1px solid #d0d0d4;
+      border-radius: 8px;
+      padding: 4px;
+      min-width: 180px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.10);
+    }
+    .track-menu button {
+      border: none;
+      background: transparent;
+      padding: 8px 12px;
+      text-align: left;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .track-menu button:hover:not(:disabled) { background: #f0f0f3; }
+    .track-menu button:disabled {
+      color: #aaa;
+      cursor: not-allowed;
+    }
+    .track-menu button.danger { color: #b91c1c; }
+    .track-menu .color-swatches {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      padding: 8px;
+    }
+    .track-menu .swatch {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      outline: 1px solid #d0d0d4;
+      cursor: pointer;
+    }
+    .track-menu .swatch.selected { outline: 2px solid #1d1d1f; }
+
+    /* ===== + Add language ===== */
+    .add-language {
+      align-self: flex-start;
+      padding: 8px 14px;
+      border: 1px dashed #c0c0c4;
+      background: transparent;
+      color: #666;
+    }
+    .add-language:hover {
+      border-style: solid;
+      background: #f0f0f3;
+      color: #1d1d1f;
+    }
+
+    /* ===== Shortcuts footer ===== */
+    .shortcuts {
+      margin-top: 8px;
+      font-size: 13px;
+      color: #666;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 18px;
+    }
+    .shortcuts kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: #fff;
+      border: 1px solid #d0d0d4;
+      border-bottom-width: 2px;
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: #1d1d1f;
+      margin-right: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+
+    <header class="topbar">
+      <div class="duration">
+        <label for="dur-min">Duration</label>
+        <input id="dur-min" type="number" min="0" value="3" aria-label="Minutes">
+        <span class="colon">:</span>
+        <input id="dur-sec" type="number" min="0" max="59" value="0" aria-label="Seconds">
+      </div>
+      <div class="globals">
+        <button type="button" data-action="advance">Advance</button>
+        <button type="button" data-action="pause">Pause</button>
+        <button type="button" data-action="reset">Reset</button>
+      </div>
+    </header>
+
+    <main class="tracks"></main>
+
+    <button class="add-language" type="button">+ Add language</button>
+
+    <footer class="shortcuts" aria-label="Keyboard shortcuts">
+      <span><kbd>Space</kbd>advance to next track</span>
+      <span><kbd>P</kbd>pause / resume active track</span>
+      <span><kbd>R</kbd>reset all tracks</span>
+      <span><kbd>Enter</kbd>commit edits</span>
+      <span><kbd>Esc</kbd>cancel edit / close menu</span>
+    </footer>
+
+  </div>
+
+  <script>
+    // ===== Palette =====
+    // 8 colors. Spanish (green) and English (blue) live at index 0 and 1
+    // so the defaults pick them up automatically.
+    const PALETTE = [
+      '#2e8540', // green
+      '#1f6feb', // blue
+      '#d97706', // orange
+      '#7c3aed', // purple
+      '#0d9488', // teal
+      '#db2777', // pink
+      '#ca8a04', // yellow
+      '#b91c1c', // red
+    ];
+
+    // ===== State =====
+    // Shape:
+    //   {
+    //     masterDurationMs: number,
+    //     activeTrackId: string | null,
+    //     tracks: [{ id, label, color, remainingMs, runState: 'paused' | 'running' }]
+    //   }
+    let nextId = 1;
+    const newId = () => `t${nextId++}`;
+
+    function defaultState() {
+      const dur = 3 * 60 * 1000;
+      return {
+        masterDurationMs: dur,
+        activeTrackId: null,
+        tracks: [
+          { id: newId(), label: 'Spanish', color: PALETTE[0], remainingMs: dur, runState: 'paused' },
+          { id: newId(), label: 'English', color: PALETTE[1], remainingMs: dur, runState: 'paused' },
+        ],
+      };
+    }
+
+    let state = defaultState();
+
+    // ===== Helpers =====
+    function formatTime(ms) {
+      const negative = ms < 0;
+      const totalSec = Math.floor(Math.abs(ms) / 1000);
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      return `${negative ? '-' : ''}${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    // ===== Overtime =====
+    // Ramp window: 0:00 → −0:30 maps depth 0 → 1. After −0:30 depth stays at 1.
+    const OVERTIME_RAMP_MS = 30000;
+    const OVERTIME_PINK = [253, 232, 240]; // barely off-white pink at 0:00
+    const OVERTIME_RED  = [127, 29, 29];   // dark red at −0:30+
+
+    function overtimeDepth(remainingMs) {
+      if (remainingMs >= 0) return 0;
+      return Math.min(1, -remainingMs / OVERTIME_RAMP_MS);
+    }
+
+    function overtimeColor(depth) {
+      const r = Math.round(OVERTIME_PINK[0] + (OVERTIME_RED[0] - OVERTIME_PINK[0]) * depth);
+      const g = Math.round(OVERTIME_PINK[1] + (OVERTIME_RED[1] - OVERTIME_PINK[1]) * depth);
+      const b = Math.round(OVERTIME_PINK[2] + (OVERTIME_RED[2] - OVERTIME_PINK[2]) * depth);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
+    // Set the per-track visual state (overtime class + custom properties).
+    // Bar fill width is also routed through here so normal-drain and
+    // overtime-fill share one code path.
+    function applyTrackVisuals(section, track) {
+      const overtime = track.remainingMs < 0;
+      section.classList.toggle('overtime', overtime);
+
+      if (overtime) {
+        const depth = overtimeDepth(track.remainingMs);
+        section.style.setProperty('--overtime-color', overtimeColor(depth));
+        section.style.setProperty('--overtime-scale', (1 + 0.5 * depth).toFixed(3));
+        // Bar inverts: empty at 0:00, fills as overtime grows.
+        section.style.setProperty('--bar-pct', (depth * 100).toFixed(2) + '%');
+      } else {
+        section.style.removeProperty('--overtime-color');
+        section.style.removeProperty('--overtime-scale');
+        section.style.removeProperty('--flash-opacity');
+        const ratio = state.masterDurationMs > 0
+          ? Math.max(0, Math.min(1, track.remainingMs / state.masterDurationMs))
+          : 0;
+        section.style.setProperty('--bar-pct', (ratio * 100).toFixed(2) + '%');
+      }
+    }
+
+    // ===== DOM refs =====
+    const tracksEl = document.querySelector('.tracks');
+    const durMinEl = document.getElementById('dur-min');
+    const durSecEl = document.getElementById('dur-sec');
+
+    // ===== Actions (mutate state, then render) =====
+    function startTrack(trackId) {
+      // Pause whatever was running and make this track the active runner.
+      for (const t of state.tracks) {
+        if (t.runState === 'running') t.runState = 'paused';
+      }
+      const track = state.tracks.find(t => t.id === trackId);
+      if (!track) return;
+      track.runState = 'running';
+      state.activeTrackId = trackId;
+      render();
+    }
+
+    function pauseTrack(trackId) {
+      const track = state.tracks.find(t => t.id === trackId);
+      if (!track) return;
+      track.runState = 'paused';
+      render();
+    }
+
+    function toggleTrack(trackId) {
+      const track = state.tracks.find(t => t.id === trackId);
+      if (!track) return;
+      if (track.runState === 'running') pauseTrack(trackId);
+      else startTrack(trackId);
+    }
+
+    function advance() {
+      // Pause the active timer and start the next track in fixed order, wrapping.
+      if (state.tracks.length === 0) return;
+      const activeIdx = state.tracks.findIndex(t => t.id === state.activeTrackId);
+      if (activeIdx === -1) {
+        // Nothing active yet — Space starts from Track 1.
+        startTrack(state.tracks[0].id);
+        return;
+      }
+      const nextIdx = (activeIdx + 1) % state.tracks.length;
+      startTrack(state.tracks[nextIdx].id);
+    }
+
+    function pauseActive() {
+      // Toggle pause/resume on whichever track is currently active.
+      if (!state.activeTrackId) return;
+      toggleTrack(state.activeTrackId);
+    }
+
+    function resetAll() {
+      for (const t of state.tracks) {
+        t.remainingMs = state.masterDurationMs;
+        t.runState = 'paused';
+      }
+      state.activeTrackId = null;
+      render();
+    }
+
+    function commitMasterDuration() {
+      // Read the two inputs, clamp, set state, then resetAll() puts every
+      // track at the new duration and clears any running/overtime state.
+      const m = Math.max(0, parseInt(durMinEl.value, 10) || 0);
+      const s = Math.max(0, Math.min(59, parseInt(durSecEl.value, 10) || 0));
+      const ms = (m * 60 + s) * 1000;
+      if (ms <= 0) {
+        // Refuse 0:00 — re-sync field to current state.
+        render();
+        return;
+      }
+      state.masterDurationMs = ms;
+      resetAll();
+    }
+
+    // Inline countdown edit. While a track is being edited it's effectively
+    // paused (the tick loop skips it via this id), and a final render()
+    // restores the display when editing exits.
+    let editingTrackId = null;
+
+    function parseTimeStr(str) {
+      str = String(str).trim().replace(/^-/, '');
+      if (!str) return null;
+      let m = 0, s = 0;
+      if (str.includes(':')) {
+        const parts = str.split(':');
+        m = parseInt(parts[0], 10);
+        s = parseInt(parts[1], 10);
+      } else {
+        // No colon: treat as seconds.
+        s = parseInt(str, 10);
+      }
+      if (Number.isNaN(m) || Number.isNaN(s)) return null;
+      return (m * 60 + s) * 1000;
+    }
+
+    function startCountdownEdit(trackId, section) {
+      if (editingTrackId) return;
+      const track = state.tracks.find(t => t.id === trackId);
+      if (!track) return;
+      const display = section.querySelector('.countdown');
+      if (!display || display.tagName === 'INPUT') return;
+
+      editingTrackId = trackId;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'countdown';
+      input.value = formatTime(track.remainingMs).replace(/^-/, '');
+      display.replaceWith(input);
+      input.focus();
+      input.select();
+
+      let finished = false;
+      const finish = (commit) => {
+        if (finished) return;
+        finished = true;
+        if (commit) {
+          const ms = parseTimeStr(input.value);
+          if (ms !== null) track.remainingMs = ms;
+        }
+        editingTrackId = null;
+        render(); // rebuild track row with the new (or unchanged) value
+      };
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      });
+      input.addEventListener('blur', () => finish(true));
+    }
+
+    // ===== Per-track menu =====
+    // null when closed; otherwise { trackId, mode: 'main' | 'color' }.
+    let openMenu = null;
+
+    function toggleTrackMenu(trackId) {
+      openMenu = openMenu?.trackId === trackId ? null : { trackId, mode: 'main' };
+      render();
+    }
+    function setMenuMode(mode) {
+      if (!openMenu) return;
+      openMenu.mode = mode;
+      render();
+    }
+    function closeMenu() {
+      if (!openMenu) return;
+      openMenu = null;
+      render();
+    }
+    function setTrackColor(trackId, color) {
+      const t = state.tracks.find(t => t.id === trackId);
+      if (!t) return;
+      t.color = color;
+      openMenu = null;
+      render();
+    }
+    function resetTrack(trackId) {
+      // Per-track reset clears just this track's time + run state. Unlike
+      // the global Reset, it preserves activeTrackId so the chair can resume
+      // the same track with P / its play button.
+      const t = state.tracks.find(t => t.id === trackId);
+      if (!t) return;
+      t.remainingMs = state.masterDurationMs;
+      t.runState = 'paused';
+      openMenu = null;
+      render();
+    }
+    function removeTrack(trackId) {
+      if (state.tracks.length <= 1) return;
+      const idx = state.tracks.findIndex(t => t.id === trackId);
+      if (idx === -1) return;
+      const wasActive = state.activeTrackId === trackId;
+      state.tracks.splice(idx, 1);
+      if (wasActive) {
+        // Promote the next track in order, wrapping. Its existing state
+        // (paused / overtime / remaining) is preserved per spec.
+        const nextIdx = idx % state.tracks.length;
+        state.activeTrackId = state.tracks[nextIdx].id;
+      }
+      openMenu = null;
+      render();
+    }
+
+    function addTrack() {
+      // Pick the first palette color no existing track is using; wrap past 8.
+      const used = new Set(state.tracks.map(t => t.color));
+      const color = PALETTE.find(c => !used.has(c)) ?? PALETTE[state.tracks.length % PALETTE.length];
+      state.tracks.push({
+        id: newId(),
+        label: `Language ${state.tracks.length + 1}`,
+        color,
+        remainingMs: state.masterDurationMs,
+        runState: 'paused',
+      });
+      render();
+    }
+
+    // ===== Tick loop =====
+    // Use performance.now() + rAF rather than setInterval so we don't drift
+    // and we don't accumulate error from background-tab throttling.
+    let lastTick = null;
+    // Smooth flash phase, advanced by hz·dt. Single global is fine — only
+    // one track runs at a time, and resetting on overtime exit avoids a
+    // jump if a track returns to overtime later.
+    let flashPhase = 0;
+    function tick(now) {
+      if (lastTick === null) lastTick = now;
+      const dt = now - lastTick;
+      lastTick = now;
+
+      const active = state.tracks.find(t => t.runState === 'running');
+      if (active && active.id !== editingTrackId) {
+        active.remainingMs -= dt;
+        updateTrackDom(active);
+
+        const section = tracksEl.querySelector(`[data-track-id="${active.id}"]`);
+        if (section && active.remainingMs < 0) {
+          // Flash rate ramps 0.25 Hz → 0.735 Hz across 0:00 → −0:30, then holds.
+          const depth = overtimeDepth(active.remainingMs);
+          const hz = 0.25 + 0.485 * depth;
+          flashPhase += dt * hz * 2 * Math.PI / 1000;
+          const intensity = (Math.sin(flashPhase) + 1) / 2;     // 0..1
+          section.style.setProperty('--flash-opacity', (0.4 + 0.6 * intensity).toFixed(3));
+        } else {
+          flashPhase = 0;
+          if (section) section.style.removeProperty('--flash-opacity');
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+
+    function updateTrackDom(track) {
+      const section = tracksEl.querySelector(`[data-track-id="${track.id}"]`);
+      if (!section) return;
+      section.querySelector('.countdown').textContent = formatTime(track.remainingMs);
+      applyTrackVisuals(section, track);
+    }
+
+    // ===== Click handlers =====
+    tracksEl.addEventListener('click', (e) => {
+      const button = e.target.closest('button[data-action]');
+      if (button) {
+        const section = button.closest('.track');
+        if (!section) return;
+        const trackId = section.dataset.trackId;
+        switch (button.dataset.action) {
+          case 'toggle-track':     toggleTrack(trackId); break;
+          case 'open-menu':        toggleTrackMenu(trackId); break;
+          case 'menu-color':       setMenuMode('color'); break;
+          case 'menu-reset':       resetTrack(trackId); break;
+          case 'menu-remove':      removeTrack(trackId); break;
+          case 'menu-pick-color':  setTrackColor(trackId, button.dataset.color); break;
+        }
+        return;
+      }
+      // Click on the countdown text → inline edit.
+      const countdown = e.target.closest('.countdown');
+      if (countdown && countdown.tagName !== 'INPUT') {
+        const section = countdown.closest('.track');
+        if (section) startCountdownEdit(section.dataset.trackId, section);
+      }
+    });
+
+    // Click outside the menu closes it. The open-menu button is exempted so
+    // a second click on it (handled via toggleTrackMenu above) doesn't get
+    // re-opened by this handler running afterwards.
+    document.addEventListener('click', (e) => {
+      if (!openMenu) return;
+      if (e.target.closest('.track-menu')) return;
+      if (e.target.closest('button[data-action="open-menu"]')) return;
+      closeMenu();
+    });
+
+    // Master duration: commit on Enter only (not per keystroke, not blur).
+    [durMinEl, durSecEl].forEach(el => {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commitMasterDuration();
+        }
+      });
+    });
+
+    document.querySelector('.topbar').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      switch (btn.dataset.action) {
+        case 'advance': advance(); break;
+        case 'pause':   pauseActive(); break;
+        case 'reset':   resetAll(); break;
+      }
+    });
+
+    document.querySelector('.add-language').addEventListener('click', addTrack);
+
+    // ===== Keyboard =====
+    function isTextEntryTarget(el) {
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      return !!el.isContentEditable;
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && openMenu) {
+        e.preventDefault();
+        closeMenu();
+        return;
+      }
+      if (isTextEntryTarget(document.activeElement)) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        advance();
+      } else if (e.key === 'p' || e.key === 'P') {
+        e.preventDefault();
+        pauseActive();
+      } else if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        resetAll();
+      }
+    });
+
+    // ===== Render =====
+    // Pure-ish: takes the current `state` and rewrites the DOM to match it.
+    // Anything user-driven (clicks, typing) lives outside this function.
+    function render() {
+      // Duration field reflects state (won't fight a user mid-edit because
+      // the field's commit lifecycle is on Enter — handled in a later step).
+      const totalSec = Math.floor(state.masterDurationMs / 1000);
+      durMinEl.value = Math.floor(totalSec / 60);
+      durSecEl.value = totalSec % 60;
+
+      // Rebuild the track list.
+      tracksEl.replaceChildren(...state.tracks.map(renderTrack));
+    }
+
+    function renderTrack(track) {
+      const section = document.createElement('section');
+      section.className = state.activeTrackId === track.id ? 'track active' : 'track';
+      section.dataset.trackId = track.id;
+      section.style.setProperty('--color', track.color);
+
+      const playBtn = document.createElement('button');
+      playBtn.className = 'play';
+      playBtn.type = 'button';
+      playBtn.dataset.action = 'toggle-track';
+      playBtn.setAttribute('aria-label', `${track.runState === 'running' ? 'Pause' : 'Play'} ${track.label}`);
+      playBtn.textContent = track.runState === 'running' ? '⏸' : '▶';
+
+      const labelDiv = document.createElement('div');
+      labelDiv.className = 'label';
+      labelDiv.textContent = track.label;
+
+      const countdownDiv = document.createElement('div');
+      countdownDiv.className = 'countdown';
+      countdownDiv.textContent = formatTime(track.remainingMs);
+
+      const menuBtn = document.createElement('button');
+      menuBtn.className = 'menu-btn';
+      menuBtn.type = 'button';
+      menuBtn.dataset.action = 'open-menu';
+      menuBtn.setAttribute('aria-label', `${track.label} menu`);
+      menuBtn.textContent = '⋯';
+
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      const barFill = document.createElement('div');
+      barFill.className = 'bar-fill';
+      bar.appendChild(barFill);
+
+      section.append(playBtn, labelDiv, countdownDiv, menuBtn, bar);
+      // Sets --bar-pct (and overtime class/vars if remainingMs < 0) so a
+      // paused-in-overtime track shows the static deep color + filled bar
+      // even before the tick loop touches it.
+      applyTrackVisuals(section, track);
+
+      if (openMenu?.trackId === track.id) {
+        section.appendChild(renderTrackMenu(track));
+      }
+      return section;
+    }
+
+    function renderTrackMenu(track) {
+      const menu = document.createElement('div');
+      menu.className = 'track-menu';
+
+      if (openMenu.mode === 'color') {
+        const swatches = document.createElement('div');
+        swatches.className = 'color-swatches';
+        for (const c of PALETTE) {
+          const s = document.createElement('button');
+          s.type = 'button';
+          s.className = 'swatch' + (c === track.color ? ' selected' : '');
+          s.style.background = c;
+          s.dataset.action = 'menu-pick-color';
+          s.dataset.color = c;
+          s.setAttribute('aria-label', `Use color ${c}`);
+          swatches.appendChild(s);
+        }
+        menu.appendChild(swatches);
+        return menu;
+      }
+
+      const items = [
+        { action: 'menu-color',  label: 'Color' },
+        { action: 'menu-reset',  label: 'Reset this track' },
+        { action: 'menu-remove', label: 'Remove track', danger: true,
+          disabled: state.tracks.length <= 1 },
+      ];
+      for (const it of items) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.dataset.action = it.action;
+        btn.textContent = it.label;
+        if (it.danger) btn.classList.add('danger');
+        if (it.disabled) btn.disabled = true;
+        menu.appendChild(btn);
+      }
+      return menu;
+    }
+
+    render();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

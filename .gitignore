@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# Editor / tooling
+.claude/
+
+# Internal spec / design notes — not published
+SPEC.md
