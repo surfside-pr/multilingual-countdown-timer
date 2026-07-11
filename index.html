@@ -315,7 +315,8 @@
         </div>
         <div class="sound">
           <label for="sound-select">Sound</label>
-          <select id="sound-select" aria-label="Red-zone alarm sound">
+          <select id="sound-select" aria-label="Overtime alarm sound">
+            <option value="metro">Music box</option>
             <option value="chime">Chime</option>
             <option value="triple">Triple</option>
             <option value="dingdong">Ding-dong</option>
@@ -351,10 +352,33 @@
     // gesture before audio can start, so ensureAudio() is called from the
     // play / advance / dropdown handlers (all user-initiated) to unlock it.
     let audioCtx = null;
+    let audioBus = null; // shared input node every tone connects to
     let loopTimer = null;
 
+    // Louder than the 0.25 default, but low enough to stay clean through the
+    // master bus (peaks compress gently rather than saturating).
+    const ALARM_VOLUME = 0.45;
+
     function ensureAudio() {
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // Master bus: a gentle, musical compressor as a soft safety net, then
+        // a small clean makeup gain. The 10 ms attack is longer than the low
+        // tone's wave period (~5 ms at 196 Hz) so it tracks the envelope, not
+        // the waveform — no per-cycle distortion/buzz. Loudness comes from
+        // honest clean gain (ALARM_VOLUME + makeup), not saturation.
+        const comp = audioCtx.createDynamicsCompressor();
+        comp.threshold.value = -6;
+        comp.knee.value = 12;
+        comp.ratio.value = 3;
+        comp.attack.value = 0.01;
+        comp.release.value = 0.25;
+        const makeup = audioCtx.createGain();
+        makeup.gain.value = 1.15;
+        comp.connect(makeup);
+        makeup.connect(audioCtx.destination);
+        audioBus = comp;
+      }
       if (audioCtx.state === 'suspended') audioCtx.resume();
       return audioCtx;
     }
@@ -362,22 +386,38 @@
     // Harmonic recipes: [frequencyMultiple, relativeAmplitude]
     const BRIGHT_BELL = [[1, 1.0], [2, 0.4], [3, 0.15], [4.2, 0.08]];
     const MARIMBA = [[1, 1.0], [3.9, 0.25], [9.2, 0.06]];
+    // Soft, mellow music-box timbre for a high-tension room: no sharp upper
+    // partials at all — just a sub-octave (0.5x) and octave for warm low body,
+    // a strong fundamental, and only a whisper of the third. Nearly a pure
+    // rounded tone, so it soothes rather than jangles.
+    const MUSIC_BOX = [[0.5, 0.28], [1, 1.0], [2, 0.22], [3, 0.06]];
 
-    // Each pattern: loop length (sec) + notes.
+    // Each pattern: loop length (sec) + `gap` of silence after each cycle
+    // (repeat interval = len + gap) + notes.
     // Note format: [freqHz, startOffsetSec, durationSec, decayRate, harmonics]
     const TONE_PATTERNS = {
-      triple: { len: 1.0, notes: [
+      triple: { len: 1.0, gap: 0.8, notes: [
         [1318.5, 0.00, 0.5, 8, BRIGHT_BELL],
         [1568.0, 0.18, 0.5, 8, BRIGHT_BELL],
         [1975.5, 0.36, 0.7, 7, BRIGHT_BELL],
       ] },
-      chime: { len: 1.2, notes: [
+      chime: { len: 1.2, gap: 0.8, notes: [
         [880.0, 0.00, 0.9, 5.5, BRIGHT_BELL],
         [1108.7, 0.30, 0.9, 5.5, BRIGHT_BELL],
       ] },
-      dingdong: { len: 1.4, notes: [
+      dingdong: { len: 1.4, gap: 0.9, notes: [
         [987.8, 0.00, 1.0, 4.5, MARIMBA],
         [659.3, 0.45, 1.1, 4.0, MARIMBA],
+      ] },
+      metro: { len: 2.75, gap: 1.0, notes: [
+        [392.0, 0.00, 0.9, 4.0, MUSIC_BOX], // G4
+        [493.9, 0.23, 0.9, 4.0, MUSIC_BOX], // B4
+        [587.3, 0.46, 0.9, 4.0, MUSIC_BOX], // D5
+        [784.0, 0.69, 1.0, 3.6, MUSIC_BOX], // G5
+        [659.3, 1.09, 0.9, 4.0, MUSIC_BOX], // E5
+        [587.3, 1.32, 1.0, 3.6, MUSIC_BOX], // D5
+        [493.9, 1.73, 1.1, 3.2, MUSIC_BOX], // B4
+        [392.0, 2.01, 1.3, 2.8, MUSIC_BOX], // G4 — resolves home
       ] },
     };
 
@@ -388,7 +428,7 @@
       master.gain.setValueAtTime(0, t0);
       master.gain.linearRampToValueAtTime(volume, t0 + 0.004); // fast attack, no click
       master.gain.setTargetAtTime(0, t0 + 0.004, 1 / decay);   // exponential decay
-      master.connect(c.destination);
+      master.connect(audioBus);
       for (const [mult, amp] of harmonics) {
         const osc = c.createOscillator();
         const g = c.createGain();
@@ -410,12 +450,14 @@
       }
     }
 
-    function startLoop(name, volume = 0.25, gapSec = 0) {
+    function startLoop(name, volume = 0.25, gapSec) {
       stopLoop();
       const p = TONE_PATTERNS[name];
       if (!p) return;
+      // Silence between cycles: explicit arg wins, else the pattern's own gap.
+      const gap = gapSec ?? p.gap ?? 0;
       playTone(name, volume);
-      loopTimer = setInterval(() => playTone(name, volume), (p.len + gapSec) * 1000);
+      loopTimer = setInterval(() => playTone(name, volume), (p.len + gap) * 1000);
     }
 
     function stopLoop() {
@@ -441,7 +483,7 @@
       const want = desiredAlarmTone();
       if (want === currentLoopTone) return; // already in the right state
       if (want === null) stopLoop();
-      else startLoop(want);
+      else startLoop(want, ALARM_VOLUME);
       currentLoopTone = want;
     }
 
@@ -473,7 +515,7 @@
       const dur = 3 * 60 * 1000;
       return {
         masterDurationMs: dur,
-        soundName: 'chime', // red-zone alarm tone: 'chime' | 'triple' | 'dingdong' | 'none'
+        soundName: 'metro', // overtime alarm tone: 'metro' | 'chime' | 'triple' | 'dingdong' | 'none'
         activeTrackId: null,
         tracks: [
           { id: newId(), label: 'Spanish', color: PALETTE[0], remainingMs: dur, runState: 'paused' },
@@ -847,7 +889,7 @@
         updateAlarm(); // stop immediately if it was ringing
       } else {
         ensureAudio();
-        playTone(state.soundName); // preview the choice
+        playTone(state.soundName, ALARM_VOLUME); // preview the choice
       }
     });
 
